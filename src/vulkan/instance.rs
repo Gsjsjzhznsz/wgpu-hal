@@ -328,20 +328,55 @@ impl super::Instance {
     ) -> Result<Self, crate::InstanceError> {
         log::debug!("Instance version: 0x{instance_api_version:x}");
 
+        let mut extensions = extensions;
+
         let debug_utils = if let Some(debug_utils_create_info) = debug_utils_create_info {
             if extensions.contains(&ext::debug_utils::NAME) {
                 log::debug!("Enabling debug utils");
 
-                let extension = ext::debug_utils::Instance::new(&entry, &raw_instance);
-                let vk_info = debug_utils_create_info.to_vk_create_info();
-                let messenger =
-                    unsafe { extension.create_debug_utils_messenger(&vk_info, None) }.unwrap();
+                // FORK (wgpu-mc-android): a driver can list VK_EXT_debug_utils, accept it
+                // in vkCreateInstance, and still answer vkGetInstanceProcAddr with null
+                // for the extension's functions - observed on a Qualcomm Adreno 830
+                // (Snapdragon 8 Elite, driver build 7853d15211) on the launch right after
+                // another process of the same game had lost its device. ash's generated
+                // loader stores a stub for a function it could not resolve, and that stub
+                // panics when called - it is an `extern "system"` function, so the panic
+                // cannot unwind and the process aborts on the spot. Ask the driver for the
+                // pointer first: when it is there, everything below behaves exactly as
+                // upstream; when it is not, degrade to "no debug utils" instead of dying,
+                // and drop the extension name from the list the rest of the backend sees -
+                // `InstanceShared::extensions` is what `adapter.rs` consults before loading
+                // `ext::debug_utils::Device`, so this also keeps the object-name and label
+                // calls on their existing `None` no-op path instead of a second abort.
+                let messenger_fn = unsafe {
+                    entry.get_instance_proc_addr(
+                        raw_instance.handle(),
+                        c"vkCreateDebugUtilsMessengerEXT".as_ptr(),
+                    )
+                };
 
-                Some(super::DebugUtils {
-                    extension,
-                    messenger,
-                    callback_data: debug_utils_create_info.callback_data,
-                })
+                if messenger_fn.is_none() {
+                    log::warn!(
+                        "the driver lists VK_EXT_debug_utils but vkGetInstanceProcAddr returned \
+                         null for vkCreateDebugUtilsMessengerEXT - skipping the debug messenger \
+                         and the debug utils object/labels entirely, because ash's \
+                         unloaded-function stub would abort the process when called"
+                    );
+
+                    extensions.retain(|&name| name != ext::debug_utils::NAME);
+                    None
+                } else {
+                    let extension = ext::debug_utils::Instance::new(&entry, &raw_instance);
+                    let vk_info = debug_utils_create_info.to_vk_create_info();
+                    let messenger =
+                        unsafe { extension.create_debug_utils_messenger(&vk_info, None) }.unwrap();
+
+                    Some(super::DebugUtils {
+                        extension,
+                        messenger,
+                        callback_data: debug_utils_create_info.callback_data,
+                    })
+                }
             } else {
                 log::debug!("Debug utils not enabled: extension not listed");
                 None
