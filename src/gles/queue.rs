@@ -321,6 +321,28 @@ impl super::Queue {
                     gl.draw_elements_indirect_offset(topology, index_type, indirect_offset as i32)
                 };
             }
+            C::MultiDrawIndexedIndirect {
+                topology,
+                index_type,
+                indirect_buf,
+                indirect_offset,
+                draw_count,
+                stride,
+                ref first_instance_location,
+            } => {
+                unsafe { gl.uniform_1_u32(first_instance_location.as_ref(), 0) };
+
+                unsafe { gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(indirect_buf)) };
+                unsafe {
+                    gl.multi_draw_elements_indirect_offset(
+                        topology,
+                        index_type,
+                        indirect_offset as i32,
+                        draw_count as i32,
+                        stride,
+                    )
+                };
+            }
             C::Dispatch(group_counts) => {
                 unsafe { gl.dispatch_compute(group_counts[0], group_counts[1], group_counts[2]) };
             }

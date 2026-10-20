@@ -249,6 +249,12 @@ bitflags::bitflags! {
         /// `GL_ARB_shader_image_load_store`; GLES needs `GL_NV_image_formats`
         /// (which itself depends on `GL_EXT_texture_norm16`).
         const TEXTURE_FORMAT_NORM16_STORAGE = 1 << 20;
+        /// Supports `glMultiDrawElementsIndirect` - core GLES 3.1, core GL 4.3
+        /// (`ARB_multi_draw_indirect`). Decided by the symbol the context actually
+        /// exported rather than by the version string it reports, for the same reason
+        /// the indirect-execution answer is: a translation surface may carry the entry
+        /// point while reporting a version older than either route to it.
+        const MULTI_DRAW_INDIRECT = 1 << 21;
     }
 }
 
@@ -929,6 +935,20 @@ enum Command {
         index_type: u32,
         indirect_buf: glow::Buffer,
         indirect_offset: wgt::BufferAddress,
+        first_instance_location: Option<glow::UniformLocation>,
+    },
+    /// **One `glMultiDrawElementsIndirect` for the whole batch.** Recorded where the encoder
+    /// receives a `draw_count > 1` indirect call and the context exports the entry point (see
+    /// `PrivateCapabilities::MULTI_DRAW_INDIRECT`); the stride is the indirect record's own
+    /// size, and every record carries its arguments in the buffer bound to
+    /// `GL_DRAW_INDIRECT_BUFFER` exactly as the single-record command's do.
+    MultiDrawIndexedIndirect {
+        topology: u32,
+        index_type: u32,
+        indirect_buf: glow::Buffer,
+        indirect_offset: wgt::BufferAddress,
+        draw_count: u32,
+        stride: i32,
         first_instance_location: Option<glow::UniformLocation>,
     },
     Dispatch([u32; 3]),

@@ -379,8 +379,23 @@ impl super::Adapter {
             vertex_shader_storage_textures.min(fragment_shader_storage_textures)
         };
         // NOTE: GL_ARB_compute_shader adds support for indirect dispatch
+        //
+        // **The symbol decides, alongside the spec's routes.** The version- and extension-based
+        // answers below are the two routes the spec offers to `glDrawElementsIndirect`; a
+        // translation surface - the mobile GL-on-Vulkan shims this port runs behind - may export
+        // the entry point while reporting a version older than either route, and one that reports
+        // a new enough version may still not export it. On a native context the loader's answer
+        // about the symbol the context actually carries is accepted alongside them: the device
+        // probes execute this exact shape and read their own sentinels back before anything
+        // batched is allowed near a frame, so a shim that lies about the symbol is caught by the
+        // same proof that catches one that lies about the version.
+        #[cfg(webgl)]
+        let indirect_by_symbol = false;
+        #[cfg(not(webgl))]
+        let indirect_by_symbol = gl.draw_elements_indirect_offset_is_loaded();
         let indirect_execution = supported((3, 1), (4, 3))
-            || (extensions.contains("GL_ARB_draw_indirect") && supports_compute);
+            || (extensions.contains("GL_ARB_draw_indirect") && supports_compute)
+            || indirect_by_symbol;
         let supports_cube_array = supported((3, 2), (4, 0))
             || (supported((3, 1), (4, 0)) && extensions.contains("GL_EXT_texture_cube_map_array"));
 
@@ -727,6 +742,24 @@ impl super::Adapter {
             supports_16bit_norm_storage,
         );
 
+        // **One-call multi-draw, decided by the symbol.** `glMultiDrawElementsIndirect` is core
+        // GLES 3.1 and core GL 4.3, and the loader resolved it wherever the context actually
+        // exports it - which is the answer that matters, for the same reason the
+        // indirect-execution answer is taken from the symbol alongside the version routes: the
+        // shims this port runs behind may report a version that names neither route while
+        // carrying the entry point all the same. Whether the call *behaves* is not this
+        // detection's question - the device probes execute the multi-draw shape and read their
+        // own sentinels back, and a driver that cannot be trusted with one draw_indexed call at
+        // a time keeps that fallback.
+        #[cfg(webgl)]
+        let multi_draw_indirect = false;
+        #[cfg(not(webgl))]
+        let multi_draw_indirect = gl.multi_draw_elements_indirect_offset_is_loaded();
+        private_caps.set(
+            super::PrivateCapabilities::MULTI_DRAW_INDIRECT,
+            multi_draw_indirect,
+        );
+
         // GLSL ES 3.10+ / GLSL 4.30+ natively support coherent/volatile qualifiers
         // on storage buffers. These were introduced alongside storage buffer support.
         if supports_storage {
@@ -937,6 +970,23 @@ impl super::Adapter {
 
         let downlevel_defaults = wgt::DownlevelLimits {};
         let max_samples = unsafe { gl.get_parameter_i32(glow::MAX_SAMPLES) };
+
+        // **The multi-draw bit, in the feature the one consumer of it reads.** There is no
+        // `Features::MULTI_DRAW_INDIRECT` in wgpu - the plain (count-known) multi-draw calls
+        // are gated on `DownlevelFlags::INDIRECT_EXECUTION` alone, and what separates a real
+        // one-call batch from a loop wearing its name is whether the backend expands
+        // `draw_count > 1` itself. On GL that is exactly `PrivateCapabilities::
+        // MULTI_DRAW_INDIRECT`, and `Features::MULTI_DRAW_INDIRECT_COUNT` is the bit a client
+        // can read to learn it. The name is the count-buffer variant's, and that variant
+        // (`glMultiDrawElementsIndirectCount`, GL 4.6 / `ARB_indirect_parameters`) is not
+        // implemented here - a client that calls the `_count` APIs with this feature on dies
+        // in the `unimplemented!()` those entries always carried, so the bit is honest about
+        // the batch and no more. The count-buffer shape asks a question the batched draws
+        // this backend serves never do: their counts are known on the CPU that records them.
+        features.set(
+            wgt::Features::MULTI_DRAW_INDIRECT_COUNT,
+            private_caps.contains(super::PrivateCapabilities::MULTI_DRAW_INDIRECT),
+        );
 
         // Drop the GL guard so we can move the context into AdapterShared
         // ( on Wasm the gl handle is just a ref so we tell clippy to allow

@@ -1163,6 +1163,36 @@ impl crate::CommandEncoder for super::CommandEncoder {
             wgt::IndexFormat::Uint16 => glow::UNSIGNED_SHORT,
             wgt::IndexFormat::Uint32 => glow::UNSIGNED_INT,
         };
+        // **One call, when the context carries the call.** `draw_count > 1` is how this encoder
+        // receives a multi-draw - wgpu-core hands the batch here as one call with a count, either
+        // straight through or merged out of its indirect-validation batcher - and the loop below
+        // is what turns that back into one GL call per record. On a context that exports
+        // `glMultiDrawElementsIndirect` (core GLES 3.1, core GL 4.3) the batch stays one call all
+        // the way down, which is the whole value of batching: a loop of indirect draws costs a
+        // submission boundary per record on the shims this port runs behind, where the one call
+        // costs one. The capability is decided by the symbol the context actually exported (see
+        // `PrivateCapabilities::MULTI_DRAW_INDIRECT`), and the device probes execute this exact
+        // shape and read their own sentinels back before anything batched is allowed near a frame.
+        //
+        // The stride is the record's own size - the same walk the loop makes, spelled for the
+        // entry point that takes it as an argument.
+        if draw_count > 1 && self.private_caps.contains(super::PrivateCapabilities::MULTI_DRAW_INDIRECT)
+        {
+            #[allow(
+                clippy::clone_on_copy,
+                reason = "False positive when cloning glow::UniformLocation"
+            )]
+            self.cmd_buffer.commands.push(C::MultiDrawIndexedIndirect {
+                topology: self.state.topology,
+                index_type,
+                indirect_buf: buffer.raw.unwrap(),
+                indirect_offset: offset,
+                draw_count,
+                stride: size_of::<wgt::DrawIndexedIndirectArgs>() as i32,
+                first_instance_location: self.state.first_instance_location.clone(),
+            });
+            return;
+        }
         for draw in 0..draw_count as wgt::BufferAddress {
             let indirect_offset =
                 offset + draw * size_of::<wgt::DrawIndexedIndirectArgs>() as wgt::BufferAddress;
